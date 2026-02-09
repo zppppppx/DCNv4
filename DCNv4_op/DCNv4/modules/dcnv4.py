@@ -108,28 +108,25 @@ class DCNv4(nn.Module):
 
     def forward(self, input):
         """
-        :param query                       (N, H, W, C)
-        :return output                     (N, H, W, C)
+        :param input                       (N, C, H, W)
+        :return output                     (N, C, H, W)
         """
         b, c, h, w = input.shape
-        input = input
 
         x = input.permute(0, 2, 3, 1).contiguous()
         if not self.without_pointwise:
             x = self.value_proj(x)
-        # x = x.reshape(b, h, w, -1)
+
         if self.dw_kernel_size is not None:
             offset_mask_input = self.offset_mask_dw(input)
-            offset_mask_input = offset_mask_input.permute(0, 2, 3, 1)#.view(b, h*w, -1)
+            offset_mask_input = offset_mask_input.permute(0, 2, 3, 1)
         else:
             offset_mask_input = input.permute(0, 2, 3, 1)
-        offset_mask = self.offset_mask(offset_mask_input)#.reshape(b, h, w, -1)
+        offset_mask = self.offset_mask(offset_mask_input)
 
         x_proj = x
 
-        if not x.is_cuda:
-            x = x_proj
-        else:
+        if x.is_cuda:
             x = DCNv4Function.apply(
                 x, offset_mask,
                 self.kernel_size, self.kernel_size,
@@ -140,17 +137,18 @@ class DCNv4(nn.Module):
                 self.offset_scale,
                 256,
                 self.remove_center
-                )
+            )
 
             if self.center_feature_scale:
                 center_feature_scale = self.center_feature_scale_module(
                     x, self.center_feature_scale_proj_weight, self.center_feature_scale_proj_bias)
                 center_feature_scale = center_feature_scale[..., None].repeat(
-                    1, 1, 1, 1, self.c // self.group).flatten(-2)
+                    1, 1, 1, 1, self.channels // self.group).flatten(-2)  # ✅ 修正
                 x = x * (1 - center_feature_scale) + x_proj * center_feature_scale
+        # CPU fallback: x 保持为 x_proj (来自 value_proj)
 
-            if not self.without_pointwise:
-                x = self.output_proj(x)
+        if not self.without_pointwise:
+            x = self.output_proj(x)
 
         x = x.permute(0, 3, 1, 2)
         return x
